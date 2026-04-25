@@ -154,6 +154,34 @@ class ConsoleUI(UserInterface):
         self.current_language = getattr(config, 'language', 'zh')
         if self.current_language not in self.languages:
             self.current_language = 'zh'
+
+    @staticmethod
+    def _elapsed_ms(started_at: Optional[float], finished_at: Optional[float]) -> int:
+        """计算毫秒耗时，缺失值返回0。"""
+        if started_at is None or finished_at is None:
+            return 0
+        return int(round((finished_at - started_at) * 1000))
+
+    @staticmethod
+    def _summarize_stream_display_metrics(
+        *,
+        started_at: float,
+        first_chunk_at: Optional[float],
+        completed_at: Optional[float],
+        consumed_chunks: int,
+        rendered_updates: int,
+        content_chars: int,
+        render_elapsed_ms: int,
+    ) -> Dict[str, Any]:
+        """汇总终端流式展示的关键诊断指标。"""
+        return {
+            "first_chunk_ms": ConsoleUI._elapsed_ms(started_at, first_chunk_at),
+            "display_duration_ms": ConsoleUI._elapsed_ms(started_at, completed_at),
+            "consumed_chunks": consumed_chunks,
+            "rendered_updates": rendered_updates,
+            "content_chars": content_chars,
+            "render_elapsed_ms": render_elapsed_ms,
+        }
         
     def welcome(self):
         """显示欢迎信息"""
@@ -427,7 +455,14 @@ OS_Agent支持两种主要交互模式，可以手动切换：
         import threading
         
         self.console.print("\n[bold cyan]AI回答中...[/bold cyan]")
-        
+        stream_started_at = time.perf_counter()
+        first_chunk_at = None
+        completed_at = None
+        consumed_chunks = 0
+        rendered_updates = 0
+        content_chars = 0
+        render_elapsed_ms = 0
+
         if hasattr(self, 'agent') and hasattr(self.agent, 'config') and hasattr(self.agent.config, 'ui'):
             buffer_size = getattr(self.agent.config.ui, 'buffer_size', 100)
         
@@ -454,6 +489,10 @@ OS_Agent支持两种主要交互模式，可以手动切换：
                     
                     empty_chunks_count = 0
                     last_chunk_time = current_time
+                    consumed_chunks += 1
+                    content_chars += len(chunk)
+                    if first_chunk_at is None:
+                        first_chunk_at = time.perf_counter()
                     accumulated_text += chunk
                     text_lines = accumulated_text.split('\n')
                     
@@ -468,6 +507,7 @@ OS_Agent支持两种主要交互模式，可以手动切换：
                     force_update = (update_counter % 10 == 0) or (current_time - last_update_time > 0.5)
                     
                     if force_update:
+                        render_started_at = time.perf_counter()
                         try:
 
                             panel = Panel(
@@ -478,14 +518,18 @@ OS_Agent支持两种主要交互模式，可以手动切换：
                                 height=current_height
                             )
                             live.update(panel)
+                            rendered_updates += 1
                             last_update_time = current_time
                         except Exception as e:
                             logging.warning(f"面板更新错误: {e}")
                             try:
                                 live.update(accumulated_text[-2000:])
+                                rendered_updates += 1
                                 last_update_time = current_time
                             except:
                                 pass
+                        finally:
+                            render_elapsed_ms += self._elapsed_ms(render_started_at, time.perf_counter())
                     
                     if update_counter % 50 == 0:
                         time.sleep(0.01)
@@ -504,6 +548,7 @@ OS_Agent支持两种主要交互模式，可以手动切换：
                         break
                 
                 try:
+                    render_started_at = time.perf_counter()
                     final_panel = Panel(
                         Markdown(accumulated_text), 
                         title="[bold green]✓ 完成[/bold green]",
@@ -511,20 +556,37 @@ OS_Agent支持两种主要交互模式，可以手动切换：
                         padding=(1, 2)
                     )
                     live.update(final_panel)
+                    rendered_updates += 1
                 except Exception as e:
                     logging.warning(f"最终面板更新错误: {e}")
                     try:
                         live.update(accumulated_text)
+                        rendered_updates += 1
                     except:
                         pass
+                finally:
+                    render_elapsed_ms += self._elapsed_ms(render_started_at, time.perf_counter())
                     
             except Exception as e:
                 logging.error(f"流式输出错误: {e}", exc_info=True)
 
                 try:
                     live.update(f"输出错误: {e}\n\n已收到的内容:\n{accumulated_text}")
+                    rendered_updates += 1
                 except:
                     pass
+            finally:
+                completed_at = time.perf_counter()
+                summary = self._summarize_stream_display_metrics(
+                    started_at=stream_started_at,
+                    first_chunk_at=first_chunk_at,
+                    completed_at=completed_at,
+                    consumed_chunks=consumed_chunks,
+                    rendered_updates=rendered_updates,
+                    content_chars=content_chars,
+                    render_elapsed_ms=render_elapsed_ms,
+                )
+                logging.info("流式输出展示统计: %s", summary)
         
         self.console.print("[dim]回答已完成[/dim]")
 

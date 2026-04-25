@@ -9,6 +9,7 @@ OpenAI API提供者
 import os
 import json
 import logging
+import time
 import requests
 import re
 from typing import Dict, Any, List, Optional, Union, Generator
@@ -97,6 +98,48 @@ class OpenAIProvider(LLMProvider):
         session = requests.Session()
         session.trust_env = False
         return session
+
+    @staticmethod
+    def _elapsed_ms(started_at: Optional[float], finished_at: Optional[float]) -> int:
+        """计算毫秒耗时，缺失值返回0。"""
+        if started_at is None or finished_at is None:
+            return 0
+        return int(round((finished_at - started_at) * 1000))
+
+    def _summarize_stream_metrics(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        request_started: float,
+        response_started: Optional[float],
+        first_line_at: Optional[float],
+        first_content_at: Optional[float],
+        completed_at: Optional[float],
+        chunk_count: int,
+        content_chars: int,
+        chunk_gap_samples_ms: List[int],
+    ) -> Dict[str, Any]:
+        """汇总流式请求关键诊断指标。"""
+        request_chars = sum(len(str(message.get("content", ""))) for message in messages)
+        avg_gap = (
+            int(round(sum(chunk_gap_samples_ms) / len(chunk_gap_samples_ms)))
+            if chunk_gap_samples_ms
+            else 0
+        )
+        max_gap = max(chunk_gap_samples_ms) if chunk_gap_samples_ms else 0
+        return {
+            "model": self.model,
+            "request_message_count": len(messages),
+            "request_chars": request_chars,
+            "connect_ms": self._elapsed_ms(request_started, response_started),
+            "first_event_ms": self._elapsed_ms(request_started, first_line_at),
+            "first_content_ms": self._elapsed_ms(request_started, first_content_at),
+            "stream_duration_ms": self._elapsed_ms(request_started, completed_at),
+            "chunk_count": chunk_count,
+            "content_chars": content_chars,
+            "avg_chunk_gap_ms": avg_gap,
+            "max_chunk_gap_ms": max_gap,
+        }
     
     def _handle_api_error(self, response: requests.Response) -> Dict[str, Any]:
         """处理API错误响应"""
@@ -159,10 +202,22 @@ class OpenAIProvider(LLMProvider):
     
     def _stream_response(self, url: str, headers: Dict[str, str], data: Dict[str, Any]) -> Generator[str, None, None]:
         """流式获取API响应"""
+        request_started = time.perf_counter()
+        response_started = None
+        first_line_at = None
+        first_content_at = None
+        completed_at = None
+        chunk_gap_samples_ms: List[int] = []
+        last_content_at = None
+        chunk_count = 0
+        content_chars = 0
+        messages = data.get("messages", [])
+
         try:
             self.logger.info(f"开始流式获取响应，URL: {url}")
             with self._create_session() as session:
                 with session.post(url, headers=headers, json=data, stream=True, timeout=self.timeout) as response:
+                    response_started = time.perf_counter()
                     if response.status_code != 200:
                         error_msg = f"错误: API返回 {response.status_code}"
                         self.logger.error(error_msg)
@@ -170,9 +225,10 @@ class OpenAIProvider(LLMProvider):
                         return
 
                     self.logger.info("流式响应连接成功，开始接收数据")
-                    buffer = ""
-                    chunk_count = 0
                     for chunk in response.iter_lines():
+                        now = time.perf_counter()
+                        if first_line_at is None:
+                            first_line_at = now
                         if chunk:
                             chunk_str = chunk.decode('utf-8')
                             if chunk_str.startswith('data: '):
@@ -186,18 +242,52 @@ class OpenAIProvider(LLMProvider):
                                     if 'choices' in chunk_data and len(chunk_data['choices']) > 0:
                                         content = chunk_data['choices'][0].get('delta', {}).get('content', '')
                                         if content:
-                                            buffer += content
+                                            if first_content_at is None:
+                                                first_content_at = now
+                                            if last_content_at is not None:
+                                                gap_ms = int(round((now - last_content_at) * 1000))
+                                                chunk_gap_samples_ms.append(gap_ms)
+                                            last_content_at = now
                                             chunk_count += 1
+                                            content_chars += len(content)
                                             if chunk_count % 10 == 0:
                                                 self.logger.debug(f"已接收 {chunk_count} 个块")
                                             yield content
                                 except json.JSONDecodeError:
                                     self.logger.warning(f"无法解析流式响应: {json_str}")
 
-                    self.logger.info(f"流式响应结束，共接收 {chunk_count} 个数据块")
+                    completed_at = time.perf_counter()
+                    summary = self._summarize_stream_metrics(
+                        messages=messages,
+                        request_started=request_started,
+                        response_started=response_started,
+                        first_line_at=first_line_at,
+                        first_content_at=first_content_at,
+                        completed_at=completed_at,
+                        chunk_count=chunk_count,
+                        content_chars=content_chars,
+                        chunk_gap_samples_ms=chunk_gap_samples_ms,
+                    )
+                    self.logger.info(
+                        "流式响应结束，共接收 %s 个数据块，诊断信息: %s",
+                        chunk_count,
+                        json.dumps(summary, ensure_ascii=False),
+                    )
         except Exception as e:
+            completed_at = time.perf_counter()
+            summary = self._summarize_stream_metrics(
+                messages=messages,
+                request_started=request_started,
+                response_started=response_started,
+                first_line_at=first_line_at,
+                first_content_at=first_content_at,
+                completed_at=completed_at,
+                chunk_count=chunk_count,
+                content_chars=content_chars,
+                chunk_gap_samples_ms=chunk_gap_samples_ms,
+            )
             error_msg = f"流式获取响应失败: {e}"
-            self.logger.error(error_msg)
+            self.logger.error("%s，诊断信息: %s", error_msg, json.dumps(summary, ensure_ascii=False))
             yield error_msg
     
     def _build_command_prompt(self, task: str, system_info: Dict[str, Any]) -> str:

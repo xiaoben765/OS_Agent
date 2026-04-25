@@ -59,6 +59,36 @@ class TaskOrchestrator:
         system_info = self.executor.get_system_info()
         environment_summary = self._summarize_environment(system_info)
         intent = self._classify_intent(user_input)
+        preplanning_clarification = self._detect_preplanning_clarification(user_input, intent)
+        if preplanning_clarification:
+            parsing_summary = self._build_parsing_summary(
+                intent=intent,
+                environment_summary=environment_summary,
+                steps=[],
+                response_mode="clarify",
+                total_risk="low",
+                clarification_prompt=preplanning_clarification,
+            )
+            plan = TaskPlan(
+                task_id=request.task_id,
+                source=source,
+                original_input=user_input,
+                user_intent=intent["summary"],
+                environment_summary=environment_summary,
+                steps=[],
+                total_risk="low",
+                requires_confirmation=False,
+                response_mode="clarify",
+                intent_label=intent["label"],
+                intent_confidence=float(intent["confidence"]),
+                clarification_prompt=preplanning_clarification,
+                parsing_summary=parsing_summary,
+            )
+            if self.audit_store:
+                self.audit_store.save_request(request)
+                self.audit_store.save_plan(plan)
+            return plan
+
         response = self._generate_command_response(
             request.task_id,
             user_input,
@@ -76,12 +106,17 @@ class TaskOrchestrator:
         if response.get("needs_clarification") and clarification_prompt:
             response_mode = "clarify"
         if response_mode == "clarify":
+            clarification_risk = self._infer_clarification_total_risk(
+                user_input=user_input,
+                intent=intent,
+                clarification_prompt=clarification_prompt,
+            )
             parsing_summary = self._build_parsing_summary(
                 intent=intent,
                 environment_summary=environment_summary,
                 steps=[],
                 response_mode="clarify",
-                total_risk="low",
+                total_risk=clarification_risk,
                 clarification_prompt=clarification_prompt,
             )
             plan = TaskPlan(
@@ -91,7 +126,7 @@ class TaskOrchestrator:
                 user_intent=intent["summary"],
                 environment_summary=environment_summary,
                 steps=[],
-                total_risk="low",
+                total_risk=clarification_risk,
                 requires_confirmation=False,
                 response_mode="clarify",
                 intent_label=intent["label"],
@@ -967,6 +1002,10 @@ class TaskOrchestrator:
         command = str(normalized.get("command", "")).strip()
         explanation = str(normalized.get("explanation", "")).strip()
 
+        upgraded = self._maybe_upgrade_largest_directory_expansion_query(user_input, normalized)
+        if upgraded is not None:
+            return upgraded
+
         upgraded = self._maybe_upgrade_cpu_process_permission_query(user_input, normalized)
         if upgraded is not None:
             return upgraded
@@ -983,6 +1022,45 @@ class TaskOrchestrator:
                 return fallback
 
         return normalized
+
+    def _maybe_upgrade_largest_directory_expansion_query(self, user_input: str, response: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        text = str(user_input or "").lower()
+        asks_largest_directory = (
+            ("最大" in text or "largest" in text)
+            and any(keyword in text for keyword in ["占用", "空间", "size", "usage"])
+            and any(keyword in text for keyword in ["目录", "directory"])
+        )
+        asks_top_children = any(keyword in text for keyword in ["前三", "top 3", "top three", "3 个", "3个"])
+        if not (asks_largest_directory and asks_top_children):
+            return None
+
+        upgraded = dict(response or {})
+        upgraded["intent_label"] = str(upgraded.get("intent_label", "磁盘空间分析")).strip() or "磁盘空间分析"
+        upgraded["intent_summary"] = str(
+            upgraded.get("intent_summary", "查找占用空间最大的目录并展开其前三个子目录的大小")
+        ).strip() or "查找占用空间最大的目录并展开其前三个子目录的大小"
+        upgraded["commands"] = [
+            {
+                "command": "du -x -d1 / 2>/dev/null | sort -rn | awk 'NR==2 {print $2; exit}'",
+                "explanation": "统计根文件系统一级目录大小，排除根目录自身后找出占用最大的目录",
+                "expected_outcome": "输出占用空间最大的一级目录路径",
+                "selection_reason": "使用 du -x -d1 限制在根文件系统一级目录内统计，避免递归全盘时把 / 自身选为最大目录。",
+                "environment_rationale": "Ubuntu 环境提供 GNU du、sort 和 awk，可稳定完成只读磁盘空间分析。",
+            },
+            {
+                "command": (
+                    "largest_dir=$(du -x -d1 / 2>/dev/null | sort -rn | awk 'NR==2 {print $2; exit}'); "
+                    "printf '=== Largest Directory: %s ===\\n' \"$largest_dir\"; "
+                    "du -x -h --max-depth=1 \"$largest_dir\" 2>/dev/null | sort -hr | head -n 4"
+                ),
+                "explanation": "重新计算最大目录并展开其一级子目录大小，展示总量和前三个子目录",
+                "expected_outcome": "显示最大目录路径、目录总量和前三个一级子目录的空间占用",
+                "selection_reason": "第二步在同一 shell 内重新计算 largest_dir，避免依赖上一执行步骤中的临时变量。",
+                "environment_rationale": "命令只读取文件系统元数据，不修改系统状态。",
+            },
+        ]
+        upgraded.pop("command", None)
+        return upgraded
 
     def _maybe_upgrade_cpu_process_permission_query(self, user_input: str, response: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         text = str(user_input or "").lower()
@@ -1080,6 +1158,11 @@ class TaskOrchestrator:
                 if item_command:
                     candidate_commands.append(item_command)
 
+        preplanning_clarification = self._detect_preplanning_clarification(user_input, intent)
+        has_user_management_create = any("useradd" in cmd or "adduser" in cmd for cmd in candidate_commands)
+        if preplanning_clarification and has_user_management_create:
+            return preplanning_clarification
+
         has_user_management_delete = any(
             "userdel" in cmd or "deluser" in cmd or "gpasswd" in cmd or "usermod" in cmd
             for cmd in candidate_commands
@@ -1087,6 +1170,34 @@ class TaskOrchestrator:
         if input_understanding == "delete" and not has_user_management_delete and "/" not in lowered and "~/" not in lowered and "../" not in lowered and "./" not in lowered:
             return "请明确要删除或清理的路径范围，避免误删系统文件。"
         return ""
+
+    def _detect_preplanning_clarification(self, user_input: str, intent: Dict[str, Any]) -> str:
+        input_understanding = str(intent.get("input_understanding", "")).lower()
+        lowered = (user_input or "").lower()
+        asks_to_create_user = (
+            input_understanding == "create"
+            and any(keyword in lowered for keyword in ["用户", "账号", "账户", "user"])
+        )
+        if asks_to_create_user and not self._extract_candidate_username(user_input):
+            return "请补充要创建的用户名，例如 demo_user。"
+        return ""
+
+    def _infer_clarification_total_risk(
+        self,
+        user_input: str,
+        intent: Dict[str, Any],
+        clarification_prompt: str,
+    ) -> str:
+        combined = f"{user_input or ''}\n{clarification_prompt or ''}"
+        touches_sensitive_file = any(path in combined for path in self.risk_evaluator.sensitive_files)
+        input_understanding = str(intent.get("input_understanding", "")).lower()
+        mutation_requested = input_understanding in {"modify", "delete", "create"} or any(
+            keyword in combined.lower()
+            for keyword in ["修改", "编辑", "写入", "删除", "配置", "免密", "权限", "modify", "edit", "write", "delete"]
+        )
+        if touches_sensitive_file and mutation_requested:
+            return "high"
+        return "low"
 
     def _extract_candidate_username(self, user_input: str) -> str:
         for candidate in re.findall(r"\b[a-z_][a-z0-9_-]{2,31}\b", (user_input or "").lower()):
@@ -1354,7 +1465,7 @@ class TaskOrchestrator:
                 continue
             if self._has_unresolved_placeholder(step.command):
                 continue
-            if self._is_diagnostic_intent(intent) and not self._is_observation_only_command(step.command):
+            if not self._is_observation_only_command(step.command):
                 continue
             filtered_steps.append(step)
             seen_commands.add(normalized)
@@ -1456,21 +1567,19 @@ class TaskOrchestrator:
                 str(intent.get("input_understanding", "")),
             ]
         ).lower()
-        keywords = ["diagnose", "diagnostic", "诊断", "排障", "故障", "原因", "恢复", "分析"]
+        keywords = ["diagnose", "diagnostic", "诊断", "排障", "故障", "失败", "原因", "恢复"]
         return any(keyword in combined for keyword in keywords)
 
     def _allows_success_plan_revision(self, intent: Dict[str, Any]) -> bool:
-        input_understanding = str(intent.get("input_understanding", "")).lower()
-        if input_understanding == "query":
-            return True
         return self._is_diagnostic_intent(intent)
 
     def _is_observation_only_command(self, command: str) -> bool:
         normalized = self._normalize_command_text(command)
         mutating_patterns = [
             r"\b(apt|apt-get|yum|dnf)\s+(install|remove|purge|upgrade|dist-upgrade|autoremove)\b",
+            r"\bsnap\s+(install|remove|refresh|enable|disable|set|unset|revert|switch|restart|stop|start)\b",
             r"\b(systemctl|service)\s+(start|stop|restart|reload|enable|disable)\b",
-            r"\b(useradd|userdel|usermod|passwd|gpasswd|chmod|chown|rm|mv|cp)\b",
+            r"\b(useradd|adduser|userdel|deluser|usermod|passwd|gpasswd|chmod|chown|rm|mv|cp)\b",
             r"\btee\b",
             r"\bsed\s+-i\b",
         ]
@@ -1840,7 +1949,13 @@ class TaskOrchestrator:
         if return_code != 0:
             return True
         if len(plan.steps) > 1:
-            return True
+            intent = {
+                "label": plan.intent_label,
+                "summary": plan.user_intent,
+                "input_understanding": plan.parsing_summary.get("input_understanding", "execute"),
+                "confidence": plan.intent_confidence,
+            }
+            return self._allows_success_plan_revision(intent)
         return (step.risk.level if step.risk else "low") != "low"
 
     def _build_local_analysis(self, command: str, stdout: str, stderr: str, return_code: int) -> Dict[str, Any]:

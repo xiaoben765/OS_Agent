@@ -92,7 +92,7 @@ class RiskEvaluator:
             reasons.append("检测到对关键目录的权限变更")
             allowed = False
 
-        if re.search(r"^(sudo\s+)?(useradd|userdel|usermod|passwd|gpasswd)\b", normalized):
+        if re.search(r"^(sudo\s+)?(useradd|adduser|userdel|deluser|usermod|passwd|gpasswd)\b", normalized):
             level = self._raise_level(level, "high")
             reasons.append("检测到用户与权限管理操作")
             requires_confirmation = True
@@ -100,6 +100,11 @@ class RiskEvaluator:
         if re.search(r"\b(apt|apt-get|yum|dnf)\b", normalized):
             level = self._raise_level(level, "medium")
             reasons.append("检测到系统级安装或服务管理操作")
+            requires_confirmation = True
+
+        if re.search(r"\bsnap\s+(install|remove|refresh|enable|disable|set|unset|revert|switch|restart|stop|start)\b", normalized):
+            level = self._raise_level(level, "medium")
+            reasons.append("检测到 Snap 软件包或服务状态变更操作")
             requires_confirmation = True
 
         if re.search(r"\b(systemctl|service)\s+(start|stop|restart|reload|enable|disable)\b", normalized):
