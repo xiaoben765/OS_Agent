@@ -1,26 +1,19 @@
 # 自测与验证说明
 
-## 场景 harness 快速预检
+## 快速预检
 
-- 运行全部场景：`python3 tests/harness/run_scenarios.py`
-- 只运行指定 YAML：`python3 tests/harness/run_scenarios.py tests/harness/scenarios/basic_queries.yaml`
-- 输出说明：
-  - 每条场景会打印 `PASS` / `FAIL`、场景编号、最终状态和实际执行命令
-  - 结尾会输出 `SUMMARY TOTAL x | PASS y | FAIL z`
-- 当前内置场景覆盖：
-  - `basic_queries.yaml`：磁盘查询、文件检索、端口/进程检查
-  - `risk_controls.yaml`：用户创建、用户删除、高风险删除阻断
-  - `continuous_tasks.yaml`：clarify -> continue、连续任务动态改计划、failure -> recovery
-- 设计约束：
-  - runner 直接驱动 `TaskOrchestrator`
-  - 默认使用测试桩 provider / executor，不依赖真实 SSH、真实模型或外部系统
-  - 适合赛前预检、演示前冒烟和 CI 中快速验证关键链路
+提交前或演示前建议先运行：
 
-## 已完成自动化验证
+```bash
+bash scripts/self_check.sh
+```
 
-- `python3 tests/harness/run_scenarios.py`
-- `python3 -m unittest tests/test_task_service.py tests/test_agent_cli.py tests/test_nlp_enhancer.py tests/test_provider_proxy.py`
-- `python3 -m py_compile os_agent.py src/agent.py src/config.py src/service/*.py src/providers/*.py src/intelligence/*.py`
+该脚本会执行：
+
+- Python 语法编译，覆盖 `os_agent.py`、`src/` 和 `scripts/`
+- `python3 os_agent.py --check -c config.yaml`，验证模型配置、本地路径和脱敏输出
+
+通过后，再进入真实 CLI 做人工验收。
 
 ## 本地手工验证建议
 

@@ -4,13 +4,13 @@
 
 | 赛题要求 | 当前实现位置 | 当前状态 | 改进后表现 | 演示/证据 |
 | --- | --- | --- | --- | --- |
-| 输入理解 | `src/service/orchestrator.py` | 半达标 | `intent_label` 与 `input_understanding` 已结构化；当前以模型返回为主、本地规则为兜底，可覆盖赛题样例之外的开放任务语义 | CLI 计划摘要、`plan.json`、`tests/test_task_service.py` |
+| 输入理解 | `src/service/orchestrator.py` | 半达标 | `intent_label` 与 `input_understanding` 已结构化；当前以模型返回为主、本地规则为兜底，可覆盖赛题样例之外的开放任务语义 | CLI 计划摘要、`plan.json`、`report.md` |
 | 意图归一化 | `TaskPlan` | 半达标 | `TaskPlan.intent_label` 与 `TaskPlan.user_intent` 同时保留开放语义标签与人类可读意图总结，不要求固定枚举 | `docs/hackathon/demo-scenarios.md` 场景 1-6 |
-| 任务拆解 | `TaskPlan.steps` | 已达标 | 每个步骤补充 `expected_outcome`、`selection_reason`、`environment_rationale`，从“有命令”提升为“有明确步骤说明” | 多步创建用户、连续任务演示、`tests/test_task_service.py` |
+| 任务拆解 | `TaskPlan.steps` | 已达标 | 每个步骤补充 `expected_outcome`、`selection_reason`、`environment_rationale`，从“有命令”提升为“有明确步骤说明” | 多步创建用户、连续任务演示、`plan.json` |
 | 环境/工具选择 | `environment_summary` + `TaskStep.environment_rationale` | 半达标 | 让 `df -h`、`find`、`ss`、`useradd` 等命令的环境选择依据显式进入计划和回放 | 端口查询、磁盘查询、`plan.json` |
 | 风险判定 | `src/service/risk.py` | 已达标 | 保持阻断/确认逻辑，并在解析说明中关联风险解释 | 高风险删除阻断、普通用户创建确认 |
 | 结果组织 | `ExecutionTrace` | 已达标 | 保持执行反馈与失败分析，同时增加 `clarify` 模式，避免信息不足时误执行 | 失败恢复建议、CLI 输出、`result.json` |
-| 澄清/拒绝分支 | `TaskPlan.response_mode` | 未达标 -> 已补齐 | 对缺少用户名、缺少端口号、缺少删除路径等请求先进入 `clarify` 分支 | `创建一个普通用户` 场景、`tests/test_task_service.py` |
+| 澄清/拒绝分支 | `TaskPlan.response_mode` | 未达标 -> 已补齐 | 对缺少用户名、缺少端口号、缺少删除路径等请求先进入 `clarify` 分支 | `创建一个普通用户` 场景、`events.jsonl` |
 
 ## 当前主链结论
 

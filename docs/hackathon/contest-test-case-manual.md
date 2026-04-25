@@ -5,7 +5,7 @@
 定位说明：
 - 本文档是“赛题验收案例手册”，用于人工验证、录制演示视频和答辩准备。
 - [self-test.md](/home/shl203/桌面/OS_Agent/docs/hackathon/self-test.md) 继续承担“快速启动与自测说明”职责。
-- [tests/test.md](/home/shl203/桌面/OS_Agent/tests/test.md) 继续承担“程序侧手测脚本”职责。
+- 本仓库已移除 `tests/` 自动化目录，验收以真实 CLI 交互和审计产物为准。
 
 ## 使用方式
 
