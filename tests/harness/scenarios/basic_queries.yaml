@@ -1,0 +1,123 @@
+suite: basic_queries
+scenarios:
+  - id: disk_usage_query
+    title: 磁盘查询
+    input: 帮我查看当前磁盘剩余空间，并告诉我哪个分区最需要关注
+    provider:
+      kind: generalization
+    executor:
+      results:
+        "df -h":
+          stdout: |
+            Filesystem      Size  Used Avail Use% Mounted on
+            /dev/sda1       100G   70G   30G  70% /
+            /dev/sdb1       200G  190G   10G  95% /data
+          stderr: ""
+          return_code: 0
+    expect:
+      intent_label: query_request
+      total_risk: low
+      risk_classifications:
+        - safe
+      state_flow:
+        - planning
+        - executing
+        - completed
+      audit_files:
+        - request.json
+        - plan.json
+        - events.jsonl
+        - result.json
+        - report.md
+      status: completed
+      commands:
+        - df -h
+      final_feedback_contains:
+        - 任务执行完成
+
+  - id: recent_large_files
+    title: 文件检索
+    input: 帮我找出 /var/log 下最近 7 天修改过的大文件
+    provider:
+      kind: generalization
+    executor:
+      results:
+        "find /var/log -type f -mtime -7 -size +100M":
+          stdout: |
+            /var/log/big-app.log
+            /var/log/archive/core.dump
+          stderr: ""
+          return_code: 0
+    expect:
+      intent_label: query_request
+      total_risk: low
+      risk_classifications:
+        - safe
+      state_flow:
+        - planning
+        - executing
+        - completed
+      audit_files:
+        - request.json
+        - plan.json
+        - events.jsonl
+        - result.json
+        - report.md
+      status: completed
+      commands:
+        - find /var/log -type f -mtime -7 -size +100M
+      final_feedback_contains:
+        - 任务执行完成
+
+  - id: port_process_check
+    title: 端口与进程检查
+    input: 查看 8080 端口是否被占用，并说明对应进程
+    provider:
+      kind: scripted
+      response:
+        commands:
+          - command: ss -ltnp '( sport = :8080 )'
+            explanation: 检查 8080 端口监听情况
+            expected_outcome: 返回 8080 端口占用信息
+          - command: ps -fp 1234
+            explanation: 查看占用 8080 端口的进程
+            expected_outcome: 返回进程详情
+    executor:
+      results:
+        "ss -ltnp '( sport = :8080 )'":
+          stdout: |
+            State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+            LISTEN 0      128        0.0.0.0:8080      0.0.0.0:*    users:(("python3",pid=1234,fd=8))
+          stderr: ""
+          return_code: 0
+        "ps -fp 1234":
+          stdout: |
+            UID   PID  PPID CMD
+            root 1234     1 python3 /opt/demo/app.py
+          stderr: ""
+          return_code: 0
+    expect:
+      intent_label: query_request
+      total_risk: low
+      risk_classifications:
+        - safe
+        - safe
+      state_flow:
+        - planning
+        - executing
+        - analyzing
+        - executing
+        - analyzing
+        - completed
+      audit_files:
+        - request.json
+        - plan.json
+        - events.jsonl
+        - result.json
+        - report.md
+      status: completed
+      commands:
+        - ss -ltnp '( sport = :8080 )'
+        - ps -fp 1234
+      final_feedback_contains:
+        - 任务执行完成

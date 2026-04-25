@@ -1,0 +1,205 @@
+suite: continuous_tasks
+scenarios:
+  - id: clarify_continue_same_task
+    title: clarify -> continue 的同任务续跑
+    turns:
+      - input: 创建一个普通用户
+        provider:
+          kind: scripted
+          response:
+            response_mode: clarify
+            needs_clarification: true
+            intent_label: account_provisioning
+            intent_summary: 创建普通用户账号
+            clarification_prompt: 请补充要创建的用户名，以及是否需要 sudo 权限。
+      - input: demo_user
+        provider:
+          kind: generalization
+        executor:
+          results:
+            "sudo useradd demo_user":
+              stdout: ""
+              stderr: ""
+              return_code: 0
+            "id demo_user":
+              stdout: "uid=1001(demo_user) gid=1001(demo_user) groups=1001(demo_user)"
+              stderr: ""
+              return_code: 0
+    expect:
+      intent_label: create_request
+      total_risk: high
+      risk_classifications:
+        - confirm
+        - safe
+      state_flow:
+        - planning
+        - needs_clarification
+        - planning
+        - awaiting_confirmation
+        - executing
+        - analyzing
+        - executing
+        - completed
+      audit_files:
+        - request.json
+        - plan.json
+        - events.jsonl
+        - result.json
+        - report.md
+      status: completed
+      commands:
+        - sudo useradd demo_user
+        - id demo_user
+      events:
+        - task_needs_clarification
+        - confirmation_recorded
+        - task_completed
+      final_feedback_contains:
+        - 任务执行完成
+
+  - id: continuous_plan_adjustment
+    title: 连续任务动态改计划
+    input: 先找出占用空间最大的目录，再展开前三个子目录的大小
+    analysis_mode: full
+    provider:
+      kind: scripted
+      response:
+        commands:
+          - command: echo scan-root
+            explanation: 扫描根目录
+            expected_outcome: 返回目录热点摘要
+          - command: echo stale-step
+            explanation: 过时的第二步
+            expected_outcome: 原始的后续输出
+      analysis:
+        "echo scan-root":
+          explanation: 根目录扫描完成，需要改为展开前三个热点目录。
+          recommendations:
+            - 根据扫描结果改写剩余步骤
+          next_steps:
+            - command: echo inspect-top3
+              explanation: 展开前三个热点目录
+              expected_outcome: 输出前三个热点目录的大小明细
+        "echo inspect-top3":
+          explanation: 热点目录分析完成
+          recommendations: []
+          next_steps: []
+    executor:
+      results:
+        "echo scan-root":
+          stdout: "root summary"
+          stderr: ""
+          return_code: 0
+        "echo inspect-top3":
+          stdout: "top3 details"
+          stderr: ""
+          return_code: 0
+        "echo stale-step":
+          stdout: "stale"
+          stderr: ""
+          return_code: 0
+    expect:
+      intent_label: query_request
+      total_risk: low
+      risk_classifications:
+        - safe
+        - safe
+      state_flow:
+        - planning
+        - executing
+        - analyzing
+        - executing
+        - analyzing
+        - completed
+      audit_files:
+        - request.json
+        - plan.json
+        - events.jsonl
+        - result.json
+        - report.md
+      status: completed
+      commands:
+        - echo scan-root
+        - echo inspect-top3
+      events:
+        - reflection_finished
+        - plan_adjusted
+        - task_completed
+      trace_summary:
+        plan_adjustments: 1
+      final_feedback_contains:
+        - 调整后续步骤
+
+  - id: failure_recovery_chain
+    title: failure -> recovery
+    input: 检查 nginx 服务状态，如果失败就帮我分析原因
+    analysis_mode: full
+    provider:
+      kind: scripted
+      response:
+        commands:
+          - command: "false"
+            explanation: 执行原始诊断命令
+            expected_outcome: 返回原始检查结果
+          - command: echo stale-followup
+            explanation: 原始后续步骤
+            expected_outcome: 继续原始链路
+      analysis:
+        "false":
+          explanation: 原始命令失败，建议切换到恢复方案。
+          recommendations:
+            - 执行安全恢复步骤
+          next_steps:
+            - command: echo recover-status
+              explanation: 执行恢复后的检查步骤
+              expected_outcome: 返回恢复后的状态结果
+        "echo recover-status":
+          explanation: 恢复后的检查已完成
+          recommendations: []
+          next_steps: []
+    executor:
+      results:
+        "false":
+          stdout: ""
+          stderr: "boom"
+          return_code: 1
+        "echo recover-status":
+          stdout: "status ok"
+          stderr: ""
+          return_code: 0
+        "echo stale-followup":
+          stdout: "stale"
+          stderr: ""
+          return_code: 0
+    expect:
+      intent_label: diagnose_request
+      total_risk: low
+      risk_classifications:
+        - safe
+        - safe
+      state_flow:
+        - planning
+        - executing
+        - analyzing
+        - recovering
+        - executing
+        - analyzing
+        - completed
+      audit_files:
+        - request.json
+        - plan.json
+        - events.jsonl
+        - result.json
+        - report.md
+      status: completed
+      commands:
+        - "false"
+        - echo recover-status
+      events:
+        - recovery_suggested
+        - task_completed
+      trace_summary:
+        recovery_used: true
+        plan_adjustments: 1
+      final_feedback_contains:
+        - 失败恢复
