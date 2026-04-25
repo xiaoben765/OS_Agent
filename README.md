@@ -190,5 +190,4 @@ bash scripts/self_check.sh
 
 ## 说明
 
-- 本次整理后，仓库默认维护 CLI 主链，不再维护 Web 入口。
 - `config.yaml` 中的密钥占位符需要替换成真实值后再运行。
